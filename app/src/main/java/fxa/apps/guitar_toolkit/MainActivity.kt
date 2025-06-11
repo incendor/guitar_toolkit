@@ -2,28 +2,26 @@ package fxa.apps.guitar_toolkit
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresPermission
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import fxa.apps.guitar_toolkit.ui.theme.Guitar_toolkitTheme
-import kotlinx.coroutines.*
-import kotlin.math.log10
-import kotlin.math.sqrt
+import be.tarsos.dsp.AudioEvent
+import be.tarsos.dsp.io.android.AudioDispatcherFactory
+import be.tarsos.dsp.pitch.PitchDetectionHandler
+import be.tarsos.dsp.pitch.PitchDetectionResult
+import be.tarsos.dsp.pitch.PitchProcessor
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,7 +56,7 @@ fun GuitarToolkitApp() {
     Guitar_toolkitTheme {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             if (permissionGranted) {
-                AudioVisualizer()
+                AudioVisualizerWithPitch()
             } else {
                 Text("Microphone permission is required.", modifier = Modifier.padding(16.dp))
             }
@@ -68,43 +66,32 @@ fun GuitarToolkitApp() {
 
 @RequiresPermission(Manifest.permission.RECORD_AUDIO)
 @Composable
-fun AudioVisualizer() {
-    val scope = rememberCoroutineScope()
-    var level by remember { mutableFloatStateOf(0f) }
-
+fun AudioVisualizerWithPitch() {
+    val context = LocalContext.current
+    var pitch by remember { mutableStateOf(-1f) }
+    val note = frequencyToNoteName(pitch)
 
     DisposableEffect(Unit) {
-        val bufferSize = AudioRecord.getMinBufferSize(
-            44100,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
-        )
+        val dispatcher = AudioDispatcherFactory.fromDefaultMicrophone(44100, 7168, 0)
 
-        val audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            44100,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize)
-
-        audioRecord.startRecording()
-
-        val buffer = ShortArray(bufferSize)
-        val job = scope.launch(Dispatchers.IO) {
-            while (isActive) {
-                val read = audioRecord.read(buffer, 0, buffer.size)
-                if (read > 0) {
-                    val rms = sqrt(buffer.take(read).map { it * it.toFloat() }.average())
-                    level = (log10(rms + 1f) / 4f).coerceIn(0.0, 1.0).toFloat()
-                }
-                delay(16)
-            }
+        val pdh = PitchDetectionHandler { res: PitchDetectionResult, _: AudioEvent ->
+            pitch = res.pitch
         }
 
+        val pitchProcessor = PitchProcessor(
+            PitchProcessor.PitchEstimationAlgorithm.YIN,
+            44100f,
+            1024,
+            pdh
+        )
+        dispatcher.addAudioProcessor(pitchProcessor)
+
+        val thread = Thread(dispatcher, "Audio Dispatcher")
+        thread.start()
+
         onDispose {
-            job.cancel()
-            audioRecord.stop()
-            audioRecord.release()
+            dispatcher.stop()
+            thread.interrupt()
         }
     }
 
@@ -114,21 +101,25 @@ fun AudioVisualizer() {
             .padding(24.dp),
         verticalArrangement = Arrangement.Center
     ) {
-        Text("Mic Level")
-        Spacer(modifier = Modifier.height(16.dp))
-        Box(
-            modifier = Modifier
-                .height(30.dp)
-                .fillMaxWidth()
-                .background(Color.Gray)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(level)
-                    .background(Color.Green)
-            )
-        }
+        Text("Detected Pitch: ${if (pitch > 0) "%.2f Hz".format(pitch) else "No pitch"}")
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("Note: $note", style = MaterialTheme.typography.headlineLarge)
     }
 }
 
+fun frequencyToNoteName(freq: Float): String {
+    if (freq <= 0) return "N/A"
+    val noteNames = listOf(
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    )
+    // Reference frequency for A4
+    val A4 = 440.0
+    // Calculate the number of semitones away from A4
+    val semitonesFromA4 = (12 * kotlin.math.log2(freq / A4)).roundToInt()
+    // Note index (0 = C, 9 = A)
+    val noteIndex = (semitonesFromA4 + 9).mod(12)
+    // Calculate octave number (A4 is in octave 4)
+    val octave = 4 + ((semitonesFromA4 + 9) / 12)
+
+    return noteNames[noteIndex] + octave
+}
