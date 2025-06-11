@@ -7,7 +7,9 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresPermission
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -15,8 +17,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import fxa.apps.guitar_toolkit.ui.theme.Guitar_toolkitTheme
 import kotlinx.coroutines.*
 import kotlin.math.log10
@@ -25,18 +28,39 @@ import kotlin.math.sqrt
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         setContent {
-            Guitar_toolkitTheme {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    if (ActivityCompat.checkSelfPermission(this,Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                        ActivityCompat.requestPermissions(this,arrayOf(Manifest.permission.RECORD_AUDIO),1)
-                        Text("Microphone permission is required.")
-                    } else {
-                        AudioVisualizer()
+            GuitarToolkitApp()
+        }
+    }
+}
 
-                    }
-                }
+@Composable
+fun GuitarToolkitApp() {
+    val context = LocalContext.current
+    var permissionGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> permissionGranted = granted }
+
+    LaunchedEffect(Unit) {
+        if (!permissionGranted) {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    Guitar_toolkitTheme {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            if (permissionGranted) {
+                AudioVisualizer()
+            } else {
+                Text("Microphone permission is required.", modifier = Modifier.padding(16.dp))
             }
         }
     }
@@ -46,7 +70,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun AudioVisualizer() {
     val scope = rememberCoroutineScope()
-    var level by remember { mutableStateOf(0f) }
+    var level by remember { mutableFloatStateOf(0f) }
 
 
     DisposableEffect(Unit) {
